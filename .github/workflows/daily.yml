@@ -1,0 +1,71 @@
+name: daily-update
+# Collects 8 Korean public-notice sources, diffs against the previous run,
+# rebuilds index.html, and pushes — GitHub Pages serves the result.
+# All 6 crawl sources verified reachable from GitHub runners (probe 2026-07-14).
+# API sources (g2b/applyhome) need the DATA_GO_KR_API_KEY repository secret;
+# without it they exit 2 and the page shows them as 미수집 (loud, not silent).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 23 * * *" # 23:30 UTC = 08:30 KST next day
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "curl_cffi>=0.15"
+
+      - name: collect all sources
+        env:
+          DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
+          TZ: Asia/Seoul
+        run: |
+          RUN="runs/$(date +%Y%m%d)"
+          mkdir -p "$RUN"
+          for src in alio gojobs iris s2b kosmes semas; do
+            python scripts/gov_crawl.py list "$src" -o "$RUN/$src.jsonl" --max-pages 15 \
+              || echo "WARN: $src collection failed"
+          done
+          python scripts/gov_api.py g2b -o "$RUN/g2b.jsonl" --days 2 \
+            || echo "WARN: g2b skipped/failed (exit $?)"
+          python scripts/gov_api.py applyhome -o "$RUN/applyhome.jsonl" --months 2 \
+            || echo "WARN: applyhome skipped/failed (exit $?)"
+          find "$RUN" -name '*.jsonl' -size 0 -delete
+          # empty-run guard: never poison the diff baseline with a blank run
+          if [ -z "$(ls -A "$RUN" 2>/dev/null)" ]; then
+            echo "FATAL: nothing collected"; rm -rf "$RUN"; exit 1
+          fi
+          ls -la "$RUN"
+
+      - name: rotate runs (keep 14) and build page
+        env:
+          TZ: Asia/Seoul
+        run: |
+          ls -d runs/*/ 2>/dev/null | sort -r | tail -n +15 | xargs -r rm -rf
+          python scripts/build_page.py --runs-dir runs --site-dir .
+
+      - name: commit and push
+        env:
+          TZ: Asia/Seoul
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "daily update $(date +%Y%m%d)"
+            git push
+          fi
