@@ -1,0 +1,20 @@
+name: probe-sources
+# Manual check: which gov-scan sources are reachable from a GitHub runner (US IP)?
+# Result decides whether the daily pipeline can move from the local scheduler to Actions.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "curl_cffi>=0.15"
+      - name: probe all sources
+        env:
+          DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
+        run: python scripts/probe_actions.py
